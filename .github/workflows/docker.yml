@@ -17,7 +17,7 @@ permissions:
 env:
   BINARY_NAME: tg-via-bot-cleaner
   REGISTRY: ghcr.io
-  IMAGE_NAME: tg-via-bot-cleaner
+  IMAGE_NAME: ${{ github.repository,, }}
 
 jobs:
   test:
