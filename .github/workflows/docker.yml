@@ -89,7 +89,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ matrix.arch }}
+            type=raw,value=${{ github.event.inputs.tag_name || github.ref_name }}-${{ matrix.arch }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -125,8 +125,8 @@ jobs:
           docker buildx imagetools create \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG} \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:arm64
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}-arm64
 
       - name: Output image info
         run: |
