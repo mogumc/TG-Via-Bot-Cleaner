@@ -1,0 +1,137 @@
+name: Docker Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag（例如 v0.2.0）'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  BINARY_NAME: tg-via-bot-cleaner
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: taiki-e/install-action@cross
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: |
+          RUSTFLAGS="-C codegen-units=1" \
+            cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Prepare binary
+        run: |
+          SRC="target/${{ matrix.target }}/release/${{ env.BINARY_NAME }}"
+          strip "$SRC" || true
+          cp "$SRC" "./${{ env.BINARY_NAME }}-linux-${{ matrix.arch }}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ matrix.arch }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+      - name: Clean up binary
+        run: rm -f "./${{ env.BINARY_NAME }}-linux-${{ matrix.arch }}"
+
+  merge-manifests:
+    name: Merge Multi-Arch Manifests
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest list
+        run: |
+          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG} \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:arm64
+
+      - name: Output image info
+        run: |
+          echo "image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          echo "tags: latest, ${{ github.event.inputs.tag_name || github.ref_name }}"
+          echo ""
+          echo "docker run -d --name tg-cleaner --restart unless-stopped \\"
+          echo "  --env-file .env ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
