@@ -17,7 +17,6 @@ permissions:
 env:
   BINARY_NAME: tg-via-bot-cleaner
   REGISTRY: ghcr.io
-  IMAGE_NAME: tg-via-bot-cleaner
 
 jobs:
   test:
@@ -54,6 +53,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Normalize image name
+        id: img
+        run: echo "image=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -75,6 +78,9 @@ jobs:
           strip "$SRC" || true
           cp "$SRC" "./${{ env.BINARY_NAME }}-linux-${{ matrix.arch }}"
 
+      # Dockerfile 里有 RUN（chmod / adduser），arm64 需要在 amd64 runner 上模拟执行
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -87,7 +93,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ steps.img.outputs.image }}
           tags: |
             type=raw,value=${{ github.event.inputs.tag_name || github.ref_name }}-${{ matrix.arch }}
 
@@ -119,19 +125,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Normalize image name
+        id: img
+        run: echo "image=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Create and push manifest list
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.img.outputs.image }}
         run: |
           TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          echo "merge $IMAGE:${TAG}-amd64 + $IMAGE:${TAG}-arm64 -> $IMAGE:${TAG}, $IMAGE:latest"
           docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG} \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}-amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}-arm64
+            -t "$IMAGE:${TAG}" \
+            -t "$IMAGE:latest" \
+            "$IMAGE:${TAG}-amd64" \
+            "$IMAGE:${TAG}-arm64"
 
       - name: Output image info
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.img.outputs.image }}
+          TAG: ${{ github.event.inputs.tag_name || github.ref_name }}
         run: |
-          echo "image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          echo "tags: latest, ${{ github.event.inputs.tag_name || github.ref_name }}"
+          echo "image: $IMAGE"
+          echo "tags: latest, $TAG"
           echo ""
           echo "docker run -d --name tg-cleaner --restart unless-stopped \\"
-          echo "  --env-file .env ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "  --env-file .env $IMAGE:latest"
